@@ -25,21 +25,6 @@ int version = 0;
 
 unsigned int responses = 0;
 
-int readline(char *line, int size) {
-  if (queued >= max_queued) {
-    return 0;
-  }
-  if (fgets(line, size, stdin)) {
-    char *newline = strchr(line, '\n'); // look for end of line
-    if (newline) {
-      *newline = '\0'; // change to end of string
-      return 1;
-    }
-  }
-  line = NULL;
-  return 0;
-}
-
 int set_nb(int fd) {
   int flags;
 
@@ -149,24 +134,6 @@ void dns_callback_gethostbyaddr(void *arg, int status, int timeouts, struct host
   }
   free(arg);
 }
-
-/*
-void dns_callback_query(void *arg, int status, int timeouts, unsigned char *abuf, int alen) {
-  queued--;
-  responses++;
-
-  if (status != ARES_SUCCESS) {
-    if (status != ARES_ENOTFOUND) {
-      printf("CALLBACK[%04d]: %s ERROR: %d\n", queued, (char *)arg, status);
-    }
-    free(arg);
-    return;
-  }
-  
-  int res;
-  res = ares_parse_ptr_reply(abuf, alen, NULL, 0, 0, NULL);
-}
-*/
 
 int main (int argc, char **argv) {
   char line[MAX_LINE_LEN] = "";
