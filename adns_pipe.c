@@ -136,7 +136,7 @@ void dns_callback_gethostbyaddr(void *arg, int status, int timeouts, struct host
 
 int main (int argc, char **argv) {
   char line[MAX_LINE_LEN] = "";
-  int nfds, count, res;
+  int nfds, ready, res;
   int nbrl = 0;
 
   struct timeval tv, *tvp;
@@ -213,7 +213,10 @@ int main (int argc, char **argv) {
       } else {
         tvp = ares_timeout(channel, NULL, &tv);
       }
-      count = select(nfds, &readers, &writers, NULL, tvp);
+      ready = select(nfds, &readers, &writers, NULL, tvp);
+      if (ready < 0) {
+        fprintf(stderr, "Error in select()\n");
+      }
       // Wait for queries to finish
       ares_process(channel, &readers, &writers);
     }
