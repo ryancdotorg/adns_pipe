@@ -1,0 +1,5 @@
+~*
+.*.swp
+*.o
+adns_pipe
+*.gz
