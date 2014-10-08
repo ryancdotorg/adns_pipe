@@ -113,11 +113,10 @@ void dns_callback_gethostbyaddr(void *arg, int status, int timeouts, struct host
   responses++;
   
   if (status != ARES_SUCCESS) {
-    if (status != ARES_ENOTFOUND) {
-      printf("CALLBACK[%04d]: %s ERROR: %d\n", queued, (char *)arg, status);
-    }
     if (timeouts > 3) {
-      printf("CALLBACK[%04d]: %s ERROR: TIMEOUT\n", queued, (char *)arg);      
+      printf("CALLBACK[%04d]: %s ERROR: Timeout\n", queued, (char *)arg);
+    } else {
+      printf("CALLBACK[%04d]: %s ERROR: %s\n", queued, (char *)arg, ares_strerror(status));
     }
     free(arg);
     return;
