@@ -105,7 +105,7 @@ int nb_readline(char *line) {
     return NBRL_WAIT;
   }
   fprintf(stderr, "nb_readline - line too long or bug\n");
-  exit(1);
+  abort();
 }
 
 void dns_callback_gethostbyaddr(void *arg, int status, int timeouts, struct hostent *host) {
@@ -139,11 +139,16 @@ int main (int argc, char **argv) {
   int nfds, ready, res;
   int nbrl = 0;
 
+  char *endptr;
+  int optnr;
+
   struct timeval tv, *tvp;
   struct in_addr ip;
 
   struct ares_options options;
   int optmask = 0;
+
+  char *servers = NULL;
 
   ares_channel channel;
   fd_set readers, writers;
@@ -151,9 +156,6 @@ int main (int argc, char **argv) {
   maxtv.tv_sec  = 0;
   maxtv.tv_usec = us_delay;
 
-  if (argc == 2) {
-    max_queued = atoi(argv[1]);
-  }
 
   set_nb(STDIN_FILENO);
 
@@ -170,12 +172,27 @@ int main (int argc, char **argv) {
             version>>16&255, version>>8&255, version&255);
   }
 
+  while( (optnr = getopt(argc, argv, "n:S:")) != -1 ) {
+    switch(optnr) {
+      case 'n':
+        max_queued = strtoul(optarg, &endptr, 10);
+        break;
+      case 'S':
+        servers = optarg;
+        break;
+    }
+  }
+
   options.timeout = 2500;
   optmask |= ARES_OPT_TIMEOUTMS;
 
   if((res = ares_init_options(&channel, &options, optmask)) != ARES_SUCCESS) {
     fprintf(stderr, "ares_init_options failed: %s\n", ares_strerror(res));
     return 1;
+  }
+
+  if (servers != NULL) {
+    ares_set_servers_csv(channel, servers);
   }
 
   for (;;) {
