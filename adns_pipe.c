@@ -14,11 +14,15 @@
 
 #define MAX_LINE_LEN 256
 
+typedef struct cb_arg {
+  char query[MAX_LINE_LEN];
+  char verbose;
+} cb_arg_t;
+
 short max_queued = 1024;
 
 int us_delay = 10000;
 struct timeval maxtv;
-
 
 int queued  = 0;
 int version = 0;
@@ -103,17 +107,22 @@ int nb_readline(char *line) {
   abort();
 }
 
-void dns_callback_gethostbyname(void *arg, int status, int timeouts, struct hostent *host) {
-  struct in_addr *in;
+void dns_callback_gethostbyname(void *cb_arg, int status, int timeouts, struct hostent *host) {
+  char ip[INET6_ADDRSTRLEN];
+  cb_arg_t *arg = cb_arg;
 
   queued--;
   responses++;
 
+  if (arg->verbose) {
+    printf("CALLBACK[%04d]: %s\n", queued, arg->query);
+  }
+
   if (status != ARES_SUCCESS) {
     if (timeouts > 3) {
-      printf("CALLBACK[%04d]: %s ERROR: Timeout\n", queued, (char *)arg);
+      printf("FAIL %s Timeout\n", arg->query);
     } else {
-      printf("CALLBACK[%04d]: %s ERROR: %s\n", queued, (char *)arg, ares_strerror(status));
+      printf("FAIL %s %s\n", arg->query, ares_strerror(status));
     }
     free(arg);
     return;
@@ -121,35 +130,41 @@ void dns_callback_gethostbyname(void *arg, int status, int timeouts, struct host
 
   int i = 0;
   while (host->h_addr_list[i] != NULL) {
-    in = (struct in_addr *)(host->h_addr_list[i]);
-    printf("CALLBACK[%04d]: %s %s\n", queued, (char *)arg, inet_ntoa(*in));
-    i++;
+    inet_ntop(host->h_addrtype, host->h_addr_list[i], ip, sizeof(ip));
+    printf("OKAY %s %s\n", arg->query, ip);
+    ++i;
   }
   free(arg);
 }
 
 
-void dns_callback_gethostbyaddr(void *arg, int status, int timeouts, struct hostent *host) {
+void dns_callback_gethostbyaddr(void *cb_arg, int status, int timeouts, struct hostent *host) {
+  cb_arg_t *arg = cb_arg;
+
   queued--;
   responses++;
+
+  if (arg->verbose) {
+    printf("CALLBACK[%04d]: %s\n", queued, arg->query);
+  }
   
   if (status != ARES_SUCCESS) {
     if (timeouts > 3) {
-      printf("CALLBACK[%04d]: %s ERROR: Timeout\n", queued, (char *)arg);
+      printf("FAIL %s Timeout\n", arg->query);
     } else {
-      printf("CALLBACK[%04d]: %s ERROR: %s\n", queued, (char *)arg, ares_strerror(status));
+      printf("FAIL %s %s\n", arg->query, ares_strerror(status));
     }
     free(arg);
     return;
   }
 
   if (version < 0x010600) {
-    printf("CALLBACK[%04d]: %s %s\n", queued, (char *)arg, host->h_name);
+    printf("OKAY %s %s\n", arg->query, host->h_name);
   } else { // Old versions of c-ares don't populate host->h_aliases
     int i = 0;
     while (host->h_aliases[i] != NULL) {
-      printf("CALLBACK[%04d]: %s %s\n", queued, (char *)arg, host->h_aliases[i]);
-      i++;
+      printf("OKAY %s %s\n", arg->query, host->h_aliases[i]);
+      ++i;
     }
   }
   free(arg);
@@ -171,7 +186,7 @@ int main (int argc, char **argv) {
 
   char *servers = NULL;
 
-  int forward = 0, reverse = 0, verbose = 0;
+  char forward = 0, reverse = 0, verbose = 0;
 
   ares_channel channel;
   fd_set readers, writers;
@@ -195,10 +210,10 @@ int main (int argc, char **argv) {
             version>>16&255, version>>8&255, version&255);
   }
 
-  while( (optnr = getopt(argc, argv, "n:S:rf")) != -1 ) {
+  while( (optnr = getopt(argc, argv, "n:S:rfv")) != -1 ) {
     switch(optnr) {
       case 'v':
-        verbose = 1;
+        if (verbose < 7) { ++verbose; }
         break;
       case 'r':
         reverse = 1;
@@ -236,24 +251,25 @@ int main (int argc, char **argv) {
     // See if we can issue more requests
     if (queued < max_queued && nbrl >= 0) {
       if ((nbrl = nb_readline(line)) > 0) {
-        char *arg;
-        arg = malloc(MAX_LINE_LEN*sizeof(char));
+        cb_arg_t *arg;
+        arg = malloc(sizeof(cb_arg_t));
         if (arg == NULL) {
           fprintf(stderr, "Malloc failed!");
           return 2;
         }
-        strncpy(arg, line, MAX_LINE_LEN);
+        strncpy(arg->query, line, MAX_LINE_LEN);
+        arg->verbose = verbose;
         if (reverse) {
           inet_aton(line, &ip);
           ares_gethostbyaddr(channel, &ip, sizeof ip, AF_INET, dns_callback_gethostbyaddr, arg);
           //                       IN PTR
           //ares_query(channel, line, 1, 12, dns_callback_query, arg);
           queued++;
-          printf("QUEUED  [%04d]: %s\n", queued, line);
+          if (verbose) printf("QUEUED  [%04d]: %s\n", queued, line);
         } else if (forward) {
           ares_gethostbyname(channel, (char *)&line, AF_INET, dns_callback_gethostbyname, arg);
           queued++;
-          printf("QUEUED  [%04d]: %s\n", queued, line);
+          if (verbose) printf("QUEUED  [%04d]: %s\n", queued, line);
         }
       } else if (nbrl == NBRL_ERR) {
         fprintf(stderr, "Error reading stdin\n");
