@@ -12,11 +12,11 @@
 
 #define STDIN_FILENO 0
 
-#define MAX_LINE_LEN   256
+#define MAX_LINE_LEN 256
 
-short max_queued    = 1024;
+short max_queued = 1024;
 
-int us_delay         = 10000;
+int us_delay = 10000;
 struct timeval maxtv;
 
 
@@ -55,20 +55,15 @@ int nb_readline(char *line) {
   fd_set fds;
   struct timeval tv;
 
-  //printf("line_buffer 1: %2d %2d %s\n", line_buffer_chkd, line_buffer_fill, line_buffer);
-
   if (line_buffer_fill > line_buffer_chkd) {
     for (;line_buffer_chkd<line_buffer_fill;line_buffer_chkd++) {
       /* check for existing eol */
-      //printf("line_buffer 2: %2d %2d %s\n", line_buffer_chkd, line_buffer_fill, line_buffer);
       if (line_buffer[line_buffer_chkd] == '\n') {
         goto gotline;
       }
     }
   }
   
-  //printf("line_buffer 3: %2d %2d %s\n", line_buffer_chkd, line_buffer_fill, line_buffer);
-
   tv.tv_sec  = 0;
   tv.tv_usec = us_delay;
   FD_ZERO(&fds);
@@ -79,7 +74,6 @@ int nb_readline(char *line) {
       line_buffer_fill += l; /* bytes read */
       for (;line_buffer_chkd<line_buffer_fill;line_buffer_chkd++) {
         /* check for eol */
-        //printf("line_buffer 4: %2d %2d %s\n", line_buffer_chkd, line_buffer_fill, line_buffer);
         if (line_buffer[line_buffer_chkd] == '\n') {
           gotline:
           line_buffer[line_buffer_chkd] = '\0';
@@ -89,15 +83,15 @@ int nb_readline(char *line) {
           memcpy(line_buffer, line_buffer + line_buffer_chkd, line_buffer_fill);
           line_buffer[line_buffer_fill] = '\0';
           line_buffer_chkd = 0;
-          //printf("line_buffer 5: %2d %2d %s\n", line_buffer_chkd, line_buffer_fill, line_buffer);
-          //printf("line_buffer r: %s\n", line);
           return NBRL_GOTLINE;
         }
+      }
+      if (line_buffer_chkd >= MAX_LINE_LEN) {
+        fprintf(stderr, "nb_readline - line too long\n");
       }
       return NBRL_WAIT;
     } else if (l == 0) {
       fprintf(stderr, "read failed, errno=%d '%s'\n", errno, strerror(errno));
-      fprintf(stderr, "Got EoF\n");
       return NBRL_EOF;
     } else {
       return NBRL_ERR;
@@ -127,7 +121,7 @@ void dns_callback_gethostbyname(void *arg, int status, int timeouts, struct host
 
   int i = 0;
   while (host->h_addr_list[i] != NULL) {
-    in = host->h_addr_list[i];
+    in = (struct in_addr *)(host->h_addr_list[i]);
     printf("CALLBACK[%04d]: %s %s\n", queued, (char *)arg, inet_ntoa(*in));
     i++;
   }
@@ -177,7 +171,7 @@ int main (int argc, char **argv) {
 
   char *servers = NULL;
 
-  int forward = 0, reverse = 0;
+  int forward = 0, reverse = 0, verbose = 0;
 
   ares_channel channel;
   fd_set readers, writers;
@@ -203,6 +197,9 @@ int main (int argc, char **argv) {
 
   while( (optnr = getopt(argc, argv, "n:S:rf")) != -1 ) {
     switch(optnr) {
+      case 'v':
+        verbose = 1;
+        break;
       case 'r':
         reverse = 1;
         break;
@@ -254,7 +251,7 @@ int main (int argc, char **argv) {
           queued++;
           printf("QUEUED  [%04d]: %s\n", queued, line);
         } else if (forward) {
-          ares_gethostbyname(channel, &line, AF_INET, dns_callback_gethostbyname, arg);
+          ares_gethostbyname(channel, (char *)&line, AF_INET, dns_callback_gethostbyname, arg);
           queued++;
           printf("QUEUED  [%04d]: %s\n", queued, line);
         }
