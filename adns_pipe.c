@@ -12,7 +12,7 @@
 
 #define STDIN_FILENO 0
 
-#define MAX_LINE_LEN    64
+#define MAX_LINE_LEN   256
 
 short max_queued    = 1024;
 
@@ -96,6 +96,7 @@ int nb_readline(char *line) {
       }
       return NBRL_WAIT;
     } else if (l == 0) {
+      fprintf(stderr, "read failed, errno=%d '%s'\n", errno, strerror(errno));
       fprintf(stderr, "Got EoF\n");
       return NBRL_EOF;
     } else {
@@ -107,6 +108,32 @@ int nb_readline(char *line) {
   fprintf(stderr, "nb_readline - line too long or bug\n");
   abort();
 }
+
+void dns_callback_gethostbyname(void *arg, int status, int timeouts, struct hostent *host) {
+  struct in_addr *in;
+
+  queued--;
+  responses++;
+
+  if (status != ARES_SUCCESS) {
+    if (timeouts > 3) {
+      printf("CALLBACK[%04d]: %s ERROR: Timeout\n", queued, (char *)arg);
+    } else {
+      printf("CALLBACK[%04d]: %s ERROR: %s\n", queued, (char *)arg, ares_strerror(status));
+    }
+    free(arg);
+    return;
+  }
+
+  int i = 0;
+  while (host->h_addr_list[i] != NULL) {
+    in = host->h_addr_list[i];
+    printf("CALLBACK[%04d]: %s %s\n", queued, (char *)arg, inet_ntoa(*in));
+    i++;
+  }
+  free(arg);
+}
+
 
 void dns_callback_gethostbyaddr(void *arg, int status, int timeouts, struct hostent *host) {
   queued--;
@@ -150,6 +177,8 @@ int main (int argc, char **argv) {
 
   char *servers = NULL;
 
+  int forward = 0, reverse = 0;
+
   ares_channel channel;
   fd_set readers, writers;
 
@@ -172,8 +201,14 @@ int main (int argc, char **argv) {
             version>>16&255, version>>8&255, version&255);
   }
 
-  while( (optnr = getopt(argc, argv, "n:S:")) != -1 ) {
+  while( (optnr = getopt(argc, argv, "n:S:rf")) != -1 ) {
     switch(optnr) {
+      case 'r':
+        reverse = 1;
+        break;
+      case 'f':
+        forward = 1;
+        break;
       case 'n':
         max_queued = strtoul(optarg, &endptr, 10);
         break;
@@ -181,6 +216,11 @@ int main (int argc, char **argv) {
         servers = optarg;
         break;
     }
+  }
+
+  if (forward == reverse) {
+    fprintf(stderr, "must specific exactly one of `-f` or `-r`\n");
+    return 1;
   }
 
   options.timeout = 2500;
@@ -199,7 +239,6 @@ int main (int argc, char **argv) {
     // See if we can issue more requests
     if (queued < max_queued && nbrl >= 0) {
       if ((nbrl = nb_readline(line)) > 0) {
-        inet_aton(line, &ip);
         char *arg;
         arg = malloc(MAX_LINE_LEN*sizeof(char));
         if (arg == NULL) {
@@ -207,11 +246,18 @@ int main (int argc, char **argv) {
           return 2;
         }
         strncpy(arg, line, MAX_LINE_LEN);
-        ares_gethostbyaddr(channel, &ip, sizeof ip, AF_INET, dns_callback_gethostbyaddr, arg);
-        //                       IN PTR
-        //ares_query(channel, line, 1, 12, dns_callback_query, arg);
-        queued++;
-        printf("QUEUED  [%04d]: %s\n", queued, line);
+        if (reverse) {
+          inet_aton(line, &ip);
+          ares_gethostbyaddr(channel, &ip, sizeof ip, AF_INET, dns_callback_gethostbyaddr, arg);
+          //                       IN PTR
+          //ares_query(channel, line, 1, 12, dns_callback_query, arg);
+          queued++;
+          printf("QUEUED  [%04d]: %s\n", queued, line);
+        } else if (forward) {
+          ares_gethostbyname(channel, &line, AF_INET, dns_callback_gethostbyname, arg);
+          queued++;
+          printf("QUEUED  [%04d]: %s\n", queued, line);
+        }
       } else if (nbrl == NBRL_ERR) {
         fprintf(stderr, "Error reading stdin\n");
         return 3;
