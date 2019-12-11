@@ -17,6 +17,8 @@
 typedef struct cb_arg {
   char query[MAX_LINE_LEN];
   char verbose;
+  char pending;
+  char gotdata;
 } cb_arg_t;
 
 short max_queued = 1024;
@@ -113,6 +115,7 @@ void dns_callback_gethostbyname(void *cb_arg, int status, int timeouts, struct h
 
   queued--;
   responses++;
+  arg->pending -= 1;
 
   if (arg->verbose) {
     printf("CALLBACK[%04d]: %s\n", queued, arg->query);
@@ -120,21 +123,28 @@ void dns_callback_gethostbyname(void *cb_arg, int status, int timeouts, struct h
 
   if (status != ARES_SUCCESS) {
     if (timeouts > 3) {
-      printf("FAIL %s Timeout\n", arg->query);
+      printf("FAIL\t%s\tTimeout\n", arg->query);
     } else {
-      printf("FAIL %s %s\n", arg->query, ares_strerror(status));
+      if (status != ARES_ENODATA || (arg->pending == 0 && arg->gotdata == 0)) {
+        printf("FAIL\t%s\t%s (%d)\n", arg->query, ares_strerror(status), status);
+      }
     }
-    free(arg);
-    return;
+    goto dns_cb_ghbn_cleanup;
   }
 
   int i = 0;
   while (host->h_addr_list[i] != NULL) {
+    arg->gotdata = 1;
     inet_ntop(host->h_addrtype, host->h_addr_list[i], ip, sizeof(ip));
-    printf("OKAY %s %s\n", arg->query, ip);
+    printf("OKAY\t%s\t%s\n", arg->query, ip);
     ++i;
   }
-  free(arg);
+dns_cb_ghbn_cleanup:
+  if (arg->pending == 0) {
+    free(arg);
+  } else if (arg->pending != 1) {
+    fprintf(stderr, "WARN %s pending=%d\n", arg->query, arg->pending);
+  }
 }
 
 
@@ -150,43 +160,61 @@ void dns_callback_gethostbyaddr(void *cb_arg, int status, int timeouts, struct h
   
   if (status != ARES_SUCCESS) {
     if (timeouts > 3) {
-      printf("FAIL %s Timeout\n", arg->query);
+      printf("FAIL\t%s\tTimeout\n", arg->query);
     } else {
-      printf("FAIL %s %s\n", arg->query, ares_strerror(status));
+      printf("FAIL\t%s\t%s (%d)\n", arg->query, ares_strerror(status), status);
     }
     free(arg);
     return;
   }
 
   if (version < 0x010600) {
-    printf("OKAY %s %s\n", arg->query, host->h_name);
+    printf("OKAY\t%s\t%s\n", arg->query, host->h_name);
   } else { // Old versions of c-ares don't populate host->h_aliases
     int i = 0;
     while (host->h_aliases[i] != NULL) {
-      printf("OKAY %s %s\n", arg->query, host->h_aliases[i]);
+      printf("OKAY\t%s\t%s\n", arg->query, host->h_aliases[i]);
       ++i;
     }
   }
   free(arg);
 }
 
+void usage(char *name) {
+  fprintf(stderr, "Usage: %s (-r|-f) [OPTIONS...]\n\n\
+ -r                          Do reverse (PTR) lookups.\n\
+ -f                          Do forward (A/AAAA) lookups.\n\
+ -4                          Do IPv4 lookups in forward mode. (default)\n\
+ -6                          Do IPv6 lookups in forward mode. This disables\n\
+                             IPv4 unless -4 is also specified.\n\
+ -T                          Always use TCP instead of UDP for queries.\n\
+ -n MAX_QUEUE                Specify maximum size of query queue.\n\
+ -S SERVERS                  Use specific DNS servers (comma seperated)\n\
+                             instead system defaults.\n\
+ -v                          Verbose mode. Repeat for more verbosity\n\
+ -h                          Show this screen.\n",
+  name);
+}
+
 int main (int argc, char **argv) {
   char line[MAX_LINE_LEN] = "";
-  int nfds, ready, res;
+  int nfds, ready, res, i;
   int nbrl = 0;
 
   char *endptr;
   int optnr;
 
   struct timeval tv, *tvp;
-  struct in_addr ip;
+
+  int ip_fam, ip_len;
+  struct in6_addr ip;
 
   struct ares_options options;
   int optmask = 0;
 
   char *servers = NULL;
 
-  char forward = 0, reverse = 0, verbose = 0;
+  char forward = 0, reverse = 0, verbose = 0, qrv4 = 1, qrv6 = 0;
 
   ares_channel channel;
   fd_set readers, writers;
@@ -210,8 +238,19 @@ int main (int argc, char **argv) {
             version>>16&255, version>>8&255, version&255);
   }
 
-  while( (optnr = getopt(argc, argv, "n:S:rfv")) != -1 ) {
+  while( (optnr = getopt(argc, argv, "n:S:rfvT46h")) != -1 ) {
     switch(optnr) {
+      case '4':
+        qrv4 = 3;
+        if (qrv6 == 1) { qrv6 = 0; }
+        break;
+      case '6':
+        qrv6 = 3;
+        if (qrv4 == 1) { qrv4 = 0; }
+        break;
+      case 'T':
+        options.flags |= ARES_FLAG_USEVC;
+        break;
       case 'v':
         if (verbose < 7) { ++verbose; }
         break;
@@ -227,6 +266,10 @@ int main (int argc, char **argv) {
       case 'S':
         servers = optarg;
         break;
+      case 'h':
+        usage(argv[0]);
+        return 1;
+        break;
     }
   }
 
@@ -235,8 +278,21 @@ int main (int argc, char **argv) {
     return 1;
   }
 
+  if (reverse && (qrv4 > 1 || qrv6 > 1)) {
+    fprintf(stderr, "WARNING: `-4` and `-6` ignored in reverse mode\n");
+  }
+
   options.timeout = 2500;
   optmask |= ARES_OPT_TIMEOUTMS;
+
+  options.ndots = 0;
+  optmask |= ARES_OPT_NDOTS;
+
+  options.flags |= ARES_FLAG_NOSEARCH;
+  options.flags |= ARES_FLAG_NOALIASES;
+  optmask |= ARES_OPT_FLAGS;
+  
+  optmask |= ARES_OPT_ROTATE;
 
   if((res = ares_init_options(&channel, &options, optmask)) != ARES_SUCCESS) {
     fprintf(stderr, "ares_init_options failed: %s\n", ares_strerror(res));
@@ -244,7 +300,10 @@ int main (int argc, char **argv) {
   }
 
   if (servers != NULL) {
-    ares_set_servers_csv(channel, servers);
+    if ((res = ares_set_servers_csv(channel, servers)) != ARES_SUCCESS) {
+      fprintf(stderr, "ares_set_servers_csv failed: %s\n", ares_strerror(res));
+      return 1;
+    }
   }
 
   for (;;) {
@@ -258,18 +317,39 @@ int main (int argc, char **argv) {
           return 2;
         }
         strncpy(arg->query, line, MAX_LINE_LEN);
+        arg->pending = arg->gotdata = 0;
         arg->verbose = verbose;
         if (reverse) {
-          inet_aton(line, &ip);
-          ares_gethostbyaddr(channel, &ip, sizeof ip, AF_INET, dns_callback_gethostbyaddr, arg);
-          //                       IN PTR
-          //ares_query(channel, line, 1, 12, dns_callback_query, arg);
+          // figure out if this is a v6 or v4 address and parse
+          for (i = 0; line[i] > 0 && i < 5; ++i) {
+            if (line[i++] == ':') {
+              ip_len = 16; ip_fam = AF_INET6;
+              res = inet_pton(AF_INET6, line, &ip);
+              goto ip_parsed;
+            }
+          }
+          ip_len = 4; ip_fam = AF_INET;
+          res = inet_aton(line, (struct in_addr *)&ip);
+
+          ip_parsed:
+          ares_gethostbyaddr(channel, &ip, ip_len, ip_fam, dns_callback_gethostbyaddr, arg);
           queued++;
-          if (verbose) printf("QUEUED  [%04d]: %s\n", queued, line);
+          if (verbose) printf("QUEUE R [%04d]: %s\n", queued, line);
         } else if (forward) {
-          ares_gethostbyname(channel, (char *)&line, AF_INET, dns_callback_gethostbyname, arg);
-          queued++;
-          if (verbose) printf("QUEUED  [%04d]: %s\n", queued, line);
+          // need to set the pending value before starting any queries
+          if (qrv4) { arg->pending += 1; }
+          if (qrv6) { arg->pending += 1; }
+          // okay, *now* run queries
+          if (qrv4) {
+            ares_gethostbyname(channel, (char *)&line, AF_INET,  dns_callback_gethostbyname, arg);
+            queued++;
+            if (verbose) printf("QUEUE 4 [%04d]: %s\n", queued, line);
+          }
+          if (qrv6) {
+            ares_gethostbyname(channel, (char *)&line, AF_INET6, dns_callback_gethostbyname, arg);
+            queued++;
+            if (verbose) printf("QUEUE 6 [%04d]: %s\n", queued, line);
+          }
         }
       } else if (nbrl == NBRL_ERR) {
         fprintf(stderr, "Error reading stdin\n");
